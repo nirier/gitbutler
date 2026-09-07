@@ -1,8 +1,8 @@
 //! Provides some slightly higher level tools to help with manipulating commits, in preparation for use in the editor.
 
 use anyhow::{Context, Result, bail};
+use but_core::commit::Headers;
 use but_core::commit::SignCommit;
-use but_core::{RefMetadata, commit::Headers};
 use gix::prelude::ObjectIdExt;
 
 use crate::graph_rebase::util::OrderedParentKind;
@@ -14,7 +14,7 @@ use crate::{
     },
 };
 
-impl<M: RefMetadata> Editor<'_, '_, M> {
+impl Editor<'_, '_, '_> {
     /// Returns a reference to the in-memory repository.
     pub fn repo(&self) -> &gix::Repository {
         &self.repo
@@ -86,6 +86,18 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
             }
         }
         bail!("Worktree {worktree_name} has no checkout recorded in the editor")
+    }
+
+    /// Make the main worktree check out `target` when the rewrite is materialized.
+    pub fn set_head_checkout(&mut self, target: impl ToSelector) -> Result<()> {
+        let target = target.to_selector(self)?;
+        for checkout in &mut self.checkouts {
+            if let super::Checkout::Head { selector, .. } = checkout {
+                *selector = target;
+                return Ok(());
+            }
+        }
+        bail!("Main worktree has no checkout recorded in the editor")
     }
 
     /// Finds a commit from inside the editor's in memory repository.

@@ -82,15 +82,13 @@ fn current_state(
     perm: &mut but_core::sync::RepoExclusive,
 ) -> anyhow::Result<WorkspaceState> {
     ctx.invalidate_workspace_cache()?;
-    let mut meta = ctx.meta()?;
     let (repo, ws, mut db) = ctx.workspace_mut_and_db_mut_with_perm(perm)?;
     WorkspaceState::from_workspace_with_db(
         &ws,
-        &mut meta,
         &repo,
         BTreeMap::new(),
         Vec::new(),
-        &mut db,
+        db.connection_mut(),
     )
 }
 
