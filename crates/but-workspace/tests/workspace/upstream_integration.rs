@@ -298,7 +298,7 @@ fn diamond_partially_content_integrated_rebase() -> Result<()> {
 └── ≡📙:E on 162b064 {1}
     ├── 📙:E
     │   └── ·cb866ec (🏘️)
-    └── 📙:C
+    └── :C
         └── ·c7b32b8 (🏘️)
 
 "#]]
@@ -2020,8 +2020,8 @@ fn workspace_target_parent_updates_while_stack_parent_remains_anonymous_segment_
 ├── ≡:anon: on fe9ae6e
 │   └── :anon:
 │       └── ·0d97cc1 (🏘️)
-├── ≡📙:target-sha on fe9ae6e {[..]}
-│   └── 📙:target-sha
+├── ≡:target-sha on fe9ae6e {[..]}
+│   └── :target-sha
 └── ≡📙:A on 20a5ffc {1}
     └── 📙:A
         └── ·c529875 (🏘️)
@@ -3876,7 +3876,7 @@ fn leaves_checked_out_local_target_branch_unchanged() -> Result<()> {
 fn worktree_workspace() -> Result<(tempfile::TempDir, gix::Repository, but_db::DbHandle)> {
     // Linked worktrees record absolute paths, so the fixture is executed rather than copied.
     let (repo, tmp) = crate::utils::writable_scenario_slow("worktree-workspace");
-    let mut meta = but_testsupport::fixture_metadata(repo.path().join("virtual-branches.toml"))?;
+    let mut meta = but_testsupport::in_memory_db();
     crate::ref_info::with_workspace_commit::utils::add_workspace(&mut meta);
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
     add_stack(&mut meta, 2, "B", StackState::InWorkspace);

@@ -1484,16 +1484,8 @@ dependencies = [
  "anyhow",
  "but-core",
  "but-db",
- "but-meta",
- "but-serde",
  "but-testsupport",
- "gitbutler-reference",
  "gix",
- "hex",
- "md5",
- "serde",
- "snapbox",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -1685,7 +1677,6 @@ dependencies = [
  "but-ctx",
  "but-db",
  "but-graph",
- "but-meta",
  "but-settings",
  "gix",
  "gix-testtools",
@@ -1694,7 +1685,6 @@ dependencies = [
  "snapbox",
  "temp-env",
  "termtree",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -3949,7 +3939,6 @@ dependencies = [
  "but-core",
  "but-ctx",
  "but-graph",
- "but-meta",
  "but-oxidize",
  "but-rebase",
  "but-schemars",
@@ -4054,7 +4043,6 @@ dependencies = [
  "but-core",
  "but-ctx",
  "but-db",
- "but-meta",
  "but-schemars",
  "but-serde",
  "but-testsupport",
@@ -4066,6 +4054,7 @@ dependencies = [
  "pretty_assertions",
  "schemars 1.2.1",
  "serde",
+ "serde_json",
  "snapbox",
  "strum 0.27.2",
  "tempfile",
