@@ -70,14 +70,21 @@ that check and does not rebuild. Older tags than the newest complete musl releas
 alone, so existing history is not backfilled. If several new tags arrive before the next
 run, one is published per day and the rest follow on later days.
 
-GitHub does not always run that schedule. On a fork, scheduled workflows can be left
-disabled until someone enables them, and in a public repository they are disabled after 60
-days without activity. The workflow file also has to stay on the default branch. To turn
-the schedule back on, open this repository's Actions tab, select "Static musl CLI", and
-click "Enable workflow". A commit that changes the `cron` line does the same thing.
-`gh workflow enable musl-cli.yml` works for an account that is allowed to manage Actions
-here. Enabling the workflow is separate from `workflow_dispatch`, which this schedule does
-not call.
+GitHub does not always deliver that schedule. On a public fork, scheduled workflows are
+disabled until the fork owner enables them, and in a public repository they are disabled
+again after 60 days without activity. The workflow file has to be on the default branch.
+Push-triggered runs can still succeed while no `schedule` event is ever queued. This
+repository's workflow is `active`, and a ten-minute cron left on `master` for about 45
+minutes produced no schedule run. The account that last changes the `cron` line becomes
+the schedule's actor, and that account has to be an active user who can manage Actions.
+Commits from an app such as `cursor[bot]` do not turn the schedule on, and
+`gh workflow enable musl-cli.yml` from that app is rejected.
+
+To enable it, sign in as the fork owner, open the Actions tab, select "Static musl CLI",
+and click "Enable workflow" if it is shown. Then commit a trivial change to the `cron`
+line from that same account so the schedule actor is the owner. The next morning's run is
+06:17 UTC. In the run list, the event must be `schedule`. Enabling the workflow is separate
+from `workflow_dispatch`, which the daily job does not call.
 
 Release 0.22.3 uses keyring's synchronous D-Bus backend, which would otherwise link
 `libdbus.so`. The workflow enables keyring's `vendored` feature while compiling the musl
