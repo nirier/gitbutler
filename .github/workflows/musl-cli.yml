@@ -23,6 +23,12 @@ on:
   push:
     tags:
       - "release/*"
+    # Pushes to the default branch that change this workflow build the latest
+    # upstream release tag. workflow_dispatch is preferred; this also starts a
+    # build when the token cannot call the dispatch API. Tag pushes are not
+    # path-filtered.
+    branches:
+      - master
   release:
     types: [published]
   schedule:
@@ -95,6 +101,23 @@ jobs:
             printf '%s' "$ver"
           }
 
+          latest_upstream_release() {
+            git ls-remote --tags "$UPSTREAM" 'refs/tags/release/*' > /tmp/upstream-tags.txt
+            mapfile -t versions < <(
+              sed -n 's#.*refs/tags/release/##p' /tmp/upstream-tags.txt |
+                grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' |
+                sort -V
+            )
+            if [[ ${#versions[@]} -eq 0 ]]; then
+              echo "no stable upstream release/* tags" >&2
+              exit 1
+            fi
+            version="${versions[-1]}"
+            validate_version "$version"
+            ref="release/${version}"
+            validate_ref "$ref"
+          }
+
           publish=false
           skip=false
 
@@ -114,26 +137,25 @@ jobs:
               ;;
             schedule)
               publish=true
-              git ls-remote --tags "$UPSTREAM" 'refs/tags/release/*' > /tmp/upstream-tags.txt
-              mapfile -t versions < <(
-                sed -n 's#.*refs/tags/release/##p' /tmp/upstream-tags.txt |
-                  grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' |
-                  sort -V
-              )
-              if [[ ${#versions[@]} -eq 0 ]]; then
-                echo "no stable upstream release/* tags" >&2
-                exit 1
-              fi
-              version="${versions[-1]}"
-              validate_version "$version"
-              ref="release/${version}"
-              validate_ref "$ref"
+              latest_upstream_release
               ;;
             push)
-              ref="$REF_NAME"
-              validate_ref "$ref"
-              version="$(version_from_tag "$ref")"
               publish=true
+              if [[ "$REF_NAME" == release/* ]]; then
+                ref="$REF_NAME"
+                validate_ref "$ref"
+                version="$(version_from_tag "$ref")"
+              else
+                files="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '.files[].filename')"
+                if ! grep -qx '.github/workflows/musl-cli.yml' <<<"$files"; then
+                  skip=true
+                  version=0.0.0
+                  ref="$REF_NAME"
+                  echo "workflow unchanged on ${REF_NAME}; not building"
+                else
+                  latest_upstream_release
+                fi
+              fi
               ;;
             release)
               ref="$RELEASE_TAG_NAME"
@@ -148,7 +170,9 @@ jobs:
           esac
 
           export GIT_TERMINAL_PROMPT=0
-          if git fetch --no-tags origin "refs/tags/${ref}:refs/tags/${ref}"; then
+          if [[ "$skip" == true ]]; then
+            sha="${GITHUB_SHA}"
+          elif git fetch --no-tags origin "refs/tags/${ref}:refs/tags/${ref}"; then
             sha="$(git rev-parse "${ref}^{commit}")"
           elif git fetch --no-tags origin "$ref"; then
             sha="$(git rev-parse "FETCH_HEAD^{commit}")"
