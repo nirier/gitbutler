@@ -322,6 +322,10 @@ jobs:
             spec="$(node -p "require('./package.json').packageManager")"
             npm install -g "$spec"
           fi
+          # A filtered install still runs the workspace prepare script, which needs the
+          # desktop app's dependencies. Drop it for this job; dependency scripts stay on
+          # so esbuild can install its binary.
+          node -e 'const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync("package.json","utf8")); if (pkg.scripts) delete pkg.scripts.prepare; fs.writeFileSync("package.json", JSON.stringify(pkg, null, "\t")+"\n");'
           pnpm install --frozen-lockfile --filter @gitbutler/but-mcp-app...
           pnpm --filter @gitbutler/but-mcp-app build
           test -s crates/but/src/command/mcp/workspace.html
