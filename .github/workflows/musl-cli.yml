@@ -521,14 +521,18 @@ jobs:
           )"
           # The heredoc above is indented; strip the common indent.
           notes="$(sed 's/^          //' <<< "$notes")"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" ./*.tar.xz SHA256SUMS --clobber
+          # This job has no checkout. Pass --repo so gh does not look for a local git dir.
+          # --verify-tag uses the existing release/* tag and does not create one on master.
+          if gh release view "$RELEASE_TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./*.tar.xz SHA256SUMS --clobber --repo "$REPO"
           else
             gh release create "$RELEASE_TAG" ./*.tar.xz SHA256SUMS \
+              --repo "$REPO" \
+              --verify-tag \
               --title "but ${VERSION} (static Linux musl)" \
               --notes "$notes" \
               --latest
           fi
-          url="$(gh release view "$RELEASE_TAG" --json url --jq .url)"
+          url="$(gh release view "$RELEASE_TAG" --repo "$REPO" --json url --jq .url)"
           echo "Release: ${url}" >> "$GITHUB_STEP_SUMMARY"
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'
+          gh release view "$RELEASE_TAG" --repo "$REPO" --json assets --jq '.assets[].name'
