@@ -33,8 +33,8 @@ on:
     types: [published]
   schedule:
     # Daily look for upstream release/X.Y.Z tags that do not yet have musl assets.
-    # Minute 17 avoids the start-of-hour Actions rush. UTC.
-    - cron: "17 6 * * *"
+    # Minute 18 avoids the start-of-hour Actions rush. UTC.
+    - cron: "18 6 * * *"
 
 permissions:
   contents: read
