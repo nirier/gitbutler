@@ -39,8 +39,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: musl-cli-${{ github.event_name }}-${{ github.ref }}-${{ inputs.version }}
-  cancel-in-progress: true
+  # Keyed by commit so a stuck run cannot hold the queue for a later fix.
+  group: musl-cli-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 defaults:
   run:
