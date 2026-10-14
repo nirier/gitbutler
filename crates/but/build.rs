@@ -28,6 +28,11 @@ fn main() {
         }
     }
 
+    // `but --version` and the app id are fixed at compile time. Rebuild when the
+    // release workflow changes them so a warm `target/` cannot keep "dev".
+    println!("cargo:rerun-if-env-changed=VERSION");
+    println!("cargo:rerun-if-env-changed=CHANNEL");
+
     let identifier = if let Ok(channel) = std::env::var("CHANNEL") {
         match channel.as_str() {
             "nightly" => "com.gitbutler.app.nightly",

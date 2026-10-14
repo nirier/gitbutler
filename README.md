@@ -90,6 +90,12 @@ The `but` CLI is the same Rust backend engine with a Rust command line UI.
 
 You can find our end user documentation at: <https://docs.gitbutler.com>
 
+## Static Linux builds
+
+This repository publishes fully static musl builds of the `but` CLI for x86_64 and aarch64
+Linux. They do not link glibc, so they run on older distributions such as CentOS 7. See
+[MUSL.md](MUSL.md) for install steps and limitations.
+
 ## Bugs and Feature Requests
 
 If you have a bug or feature request, feel free to open an [issue](https://github.com/gitbutlerapp/gitbutler/issues/new),

@@ -1,0 +1,528 @@
+name: Static musl CLI
+
+# Fully static musl builds of the `but` CLI (not the desktop app).
+# See MUSL.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version baked into `but --version`, for example 0.22.3
+        required: true
+        type: string
+      source_ref:
+        description: Git ref to build. Empty uses release/<version> from this repo or upstream.
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: Attach the tarballs to the GitHub Release for release/<version>
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "release/*"
+  release:
+    types: [published]
+  schedule:
+    # Daily look for a new upstream release/* tag.
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: musl-cli-${{ github.event_name }}-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.out.outputs.version }}
+      sha: ${{ steps.out.outputs.sha }}
+      release_tag: ${{ steps.out.outputs.release_tag }}
+      publish: ${{ steps.out.outputs.publish }}
+      skip: ${{ steps.out.outputs.skip }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Resolve source revision
+        id: out
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_REF: ${{ inputs.source_ref }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          UPSTREAM: https://github.com/gitbutlerapp/gitbutler.git
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          validate_version() {
+            if [[ ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.]+)?$ ]]; then
+              echo "invalid version: $1" >&2
+              exit 1
+            fi
+          }
+
+          validate_ref() {
+            if [[ ! "$1" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$1" == *".."* ]] || [[ "$1" == -* ]]; then
+              echo "invalid ref: $1" >&2
+              exit 1
+            fi
+          }
+
+          version_from_tag() {
+            local tag="$1"
+            local ver="${tag#release/}"
+            ver="${ver#v}"
+            validate_version "$ver"
+            printf '%s' "$ver"
+          }
+
+          publish=false
+          skip=false
+
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              version="$INPUT_VERSION"
+              validate_version "$version"
+              if [[ -n "$INPUT_REF" ]]; then
+                ref="$INPUT_REF"
+              else
+                ref="release/${version}"
+              fi
+              validate_ref "$ref"
+              if [[ "$INPUT_PUBLISH" == "true" ]]; then
+                publish=true
+              fi
+              ;;
+            schedule)
+              publish=true
+              git ls-remote --tags "$UPSTREAM" 'refs/tags/release/*' > /tmp/upstream-tags.txt
+              mapfile -t versions < <(
+                sed -n 's#.*refs/tags/release/##p' /tmp/upstream-tags.txt |
+                  grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' |
+                  sort -V
+              )
+              if [[ ${#versions[@]} -eq 0 ]]; then
+                echo "no stable upstream release/* tags" >&2
+                exit 1
+              fi
+              version="${versions[-1]}"
+              validate_version "$version"
+              ref="release/${version}"
+              validate_ref "$ref"
+              ;;
+            push)
+              ref="$REF_NAME"
+              validate_ref "$ref"
+              version="$(version_from_tag "$ref")"
+              publish=true
+              ;;
+            release)
+              ref="$RELEASE_TAG_NAME"
+              validate_ref "$ref"
+              version="$(version_from_tag "$ref")"
+              publish=true
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          export GIT_TERMINAL_PROMPT=0
+          if git fetch --no-tags origin "refs/tags/${ref}:refs/tags/${ref}"; then
+            sha="$(git rev-parse "${ref}^{commit}")"
+          elif git fetch --no-tags origin "$ref"; then
+            sha="$(git rev-parse "FETCH_HEAD^{commit}")"
+          elif git fetch --no-tags "$UPSTREAM" "refs/tags/${ref}:refs/tags/${ref}"; then
+            sha="$(git rev-parse "${ref}^{commit}")"
+            echo "syncing ${ref} (${sha}) from upstream onto this fork"
+            git push origin "refs/tags/${ref}:refs/tags/${ref}"
+          else
+            echo "could not find ref ${ref} on origin or upstream" >&2
+            exit 1
+          fi
+
+          release_tag="release/${version}"
+          if git fetch --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}" \
+            && [[ "$ref" != "$release_tag" ]]; then
+            tag_sha="$(git rev-parse "${release_tag}^{commit}")"
+            if [[ "$sha" != "$tag_sha" ]]; then
+              echo "ref ${ref} (${sha}) does not match ${release_tag} (${tag_sha})" >&2
+              exit 1
+            fi
+          fi
+
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            assets="$(gh release view "$release_tag" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+            need_x86="gitbutler-cli-${version}-x86_64-linux-musl.tar.xz"
+            need_arm="gitbutler-cli-${version}-aarch64-linux-musl.tar.xz"
+            if grep -qx "$need_x86" <<<"$assets" \
+              && grep -qx "$need_arm" <<<"$assets" \
+              && grep -qx "SHA256SUMS" <<<"$assets"; then
+              skip=true
+              echo "release ${release_tag} already has musl assets"
+            fi
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "skip=${skip}" >> "$GITHUB_OUTPUT"
+          echo "Building ${version} from ${sha}, release ${release_tag}, publish=${publish}, skip=${skip}"
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+            qemu: ""
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            qemu: qemu-aarch64-static
+    env:
+      ARCH: ${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+      QEMU: ${{ matrix.qemu }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      CHANNEL: release
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: z
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install build packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            file \
+            pkg-config \
+            python3 \
+            qemu-user-static \
+            xz-utils
+
+      - name: Cache musl toolchain
+        id: musl-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ runner.tool_cache }}/musl-cross
+          key: musl-cc-${{ matrix.arch }}-2021-11-23
+
+      - name: Install musl cross toolchain
+        run: |
+          set -euo pipefail
+          prefix="${ARCH}-linux-musl-cross"
+          dest="${RUNNER_TOOL_CACHE}/musl-cross"
+          gcc="${dest}/${prefix}/bin/${ARCH}-linux-musl-gcc"
+          if [[ ! -x "$gcc" ]]; then
+            mkdir -p "$dest"
+            tmp="$(mktemp)"
+            downloaded=0
+            for url in \
+              "https://musl.cc/${prefix}.tgz" \
+              "https://more.musl.cc/${prefix}.tgz"
+            do
+              echo "fetching ${url}"
+              if curl -fL --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
+                tar -xzf "$tmp" -C "$dest"
+                downloaded=1
+                break
+              fi
+            done
+            rm -f "$tmp"
+            if [[ "$downloaded" != 1 || ! -x "$gcc" ]]; then
+              echo "failed to install ${prefix}" >&2
+              exit 1
+            fi
+          fi
+          echo "${dest}/${prefix}/bin" >> "$GITHUB_PATH"
+          "${gcc}" --version
+
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain none
+          fi
+          if [[ -f "$HOME/.cargo/env" ]]; then
+            # shellcheck disable=SC1091
+            source "$HOME/.cargo/env"
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup show
+          rustup target add "$TARGET"
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: musl-but-${{ matrix.target }}-${{ needs.resolve.outputs.version }}
+          cache-on-failure: true
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build bundled MCP apps
+        id: mcp
+        run: |
+          set -euo pipefail
+          if [[ ! -f packages/but-mcp-app/package.json ]]; then
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo "no MCP app package in this revision"
+            exit 0
+          fi
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          if ! corepack enable || ! corepack prepare --activate; then
+            spec="$(node -p "require('./package.json').packageManager")"
+            npm install -g "$spec"
+          fi
+          pnpm install --frozen-lockfile --filter @gitbutler/but-mcp-app...
+          pnpm --filter @gitbutler/but-mcp-app build
+          test -s crates/but/src/command/mcp/workspace.html
+          test -s crates/but/src/command/mcp/review.html
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - name: Enable vendored keyring for this build
+        run: |
+          set -euo pipefail
+          # Applied only in this job, not on the default branch. release/0.22.3 enables
+          # keyring's sync dbus backend, which links libdbus unless `vendored` is set.
+          # Later revisions use the async backend; `vendored` is then a no-op.
+          python3 - << 'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          start = text.find("keyring = {")
+          if start < 0:
+              sys.exit("keyring dependency not found in Cargo.toml")
+          end = text.find("]", start)
+          brace = text.find("}", start)
+          bracket = text.find("[", start)
+          if end < 0 or bracket < 0 or (0 <= brace < end):
+              sys.exit("keyring features array not found")
+          block = text[start:end]
+          if re.search(r"""["']vendored["']""", block):
+              print("keyring vendored feature already present")
+          else:
+              text = text[: bracket + 1] + '\n    "vendored",' + text[bracket + 1 :]
+              path.write_text(text)
+              print("added keyring vendored feature for this musl build")
+          PY
+
+      - name: Build but
+        env:
+          MCP_BUILT: ${{ steps.mcp.outputs.built }}
+        run: |
+          set -euo pipefail
+          if [[ -f "$HOME/.cargo/env" ]]; then
+            # shellcheck disable=SC1091
+            source "$HOME/.cargo/env"
+          fi
+          suffix="$(printf '%s' "$TARGET" | tr 'a-z-' 'A-Z_')"
+          lower="$(printf '%s' "$TARGET" | tr '-' '_')"
+          export "CC_${lower}=${ARCH}-linux-musl-gcc"
+          export "CXX_${lower}=${ARCH}-linux-musl-g++"
+          export "AR_${lower}=${ARCH}-linux-musl-ar"
+          export "CARGO_TARGET_${suffix}_LINKER=${ARCH}-linux-musl-gcc"
+          # Target rustflags replace .cargo/config.toml build.rustflags, so keep tokio_unstable.
+          export "CARGO_TARGET_${suffix}_RUSTFLAGS=--cfg tokio_unstable -C target-feature=+crt-static"
+          export LIBZ_SYS_STATIC=1
+          export OPENSSL_STATIC=1
+          export VERSION
+          export CHANNEL
+          if [[ "$MCP_BUILT" == "true" ]]; then
+            export GITBUTLER_REQUIRE_MCP_APP=1
+          fi
+          # The vendored patch edits Cargo.toml, so the published lockfile may need
+          # libdbus-sys's optional `cc` build-dependency. Do not pass --locked.
+          cargo build --release -p but --target "$TARGET"
+
+      - name: Verify and package
+        run: |
+          set -euo pipefail
+          bin="target/${TARGET}/release/but"
+          test -x "$bin"
+          file "$bin"
+          if ! file "$bin" | grep -Eq 'statically linked|static-pie'; then
+            echo "binary is not statically linked" >&2
+            exit 1
+          fi
+          if readelf -l "$bin" | grep -q 'Requesting program interpreter'; then
+            echo "binary has a dynamic interpreter" >&2
+            readelf -l "$bin" >&2
+            exit 1
+          fi
+          if readelf -d "$bin" 2>/dev/null | grep -q 'NEEDED'; then
+            echo "binary has dynamic library dependencies" >&2
+            readelf -d "$bin" >&2
+            exit 1
+          fi
+          if readelf -W -s "$bin" | grep -q 'GLIBC_'; then
+            echo "binary references GLIBC symbols" >&2
+            exit 1
+          fi
+          case "$ARCH" in
+            x86_64) file "$bin" | grep -q 'x86-64' ;;
+            aarch64) file "$bin" | grep -Eq 'ARM aarch64|aarch64' ;;
+          esac
+          ldd "$bin" || true
+
+          if [[ -n "$QEMU" ]]; then
+            if ! command -v "$QEMU" >/dev/null 2>&1; then
+              echo "missing qemu interpreter ${QEMU}" >&2
+              exit 1
+            fi
+            actual="$("$QEMU" "$bin" --version | tr -d '\r')"
+          else
+            actual="$("$bin" --version | tr -d '\r')"
+          fi
+          expected="but ${VERSION}"
+          echo "version output: ${actual}"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "expected '${expected}'" >&2
+            exit 1
+          fi
+
+          name="gitbutler-cli-${VERSION}-${ARCH}-linux-musl"
+          stage="$(mktemp -d)"
+          mkdir -p "${stage}/${name}/bin"
+          cp "$bin" "${stage}/${name}/bin/but"
+          chmod 755 "${stage}/${name}/bin/but"
+          if [[ -f LICENSE.md ]]; then
+            cp LICENSE.md "${stage}/${name}/LICENSE"
+          elif [[ -f LICENSE ]]; then
+            cp LICENSE "${stage}/${name}/LICENSE"
+          else
+            echo "LICENSE file not found" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          XZ_OPT="-9 -T0" tar -C "$stage" -cJf "dist/${name}.tar.xz" "$name"
+          size="$(stat -c%s "dist/${name}.tar.xz")"
+          echo "tarball bytes: ${size}"
+          max=$((25 * 1024 * 1024))
+          if (( size > max )); then
+            echo "tarball exceeds 25 MB" >&2
+            exit 1
+          fi
+          tar -tJf "dist/${name}.tar.xz"
+          {
+            echo "### ${ARCH}"
+            echo "- \`$(file -b "$bin")\`"
+            echo "- \`${actual}\`"
+            echo "- \`${name}.tar.xz\` (${size} bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: musl-${{ matrix.arch }}
+          path: dist/*.tar.xz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.skip != 'true' && needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Download tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: musl-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find dist -type f -name '*.tar.xz' -exec cp {} release/ \;
+          cd release
+          count="$(find . -maxdepth 1 -type f -name '*.tar.xz' | wc -l)"
+          if [[ "$count" != "2" ]]; then
+            echo "expected 2 tarballs, found ${count}" >&2
+            ls -la >&2
+            exit 1
+          fi
+          test -f "gitbutler-cli-${VERSION}-x86_64-linux-musl.tar.xz"
+          test -f "gitbutler-cli-${VERSION}-aarch64-linux-musl.tar.xz"
+          sha256sum -- *.tar.xz > SHA256SUMS
+          cat SHA256SUMS
+          notes="$(cat << EOF
+          Static musl builds of the \`but\` CLI ${VERSION} for Linux. These binaries do not link glibc and run on older distributions such as CentOS 7.
+
+          - \`gitbutler-cli-${VERSION}-x86_64-linux-musl.tar.xz\`
+          - \`gitbutler-cli-${VERSION}-aarch64-linux-musl.tar.xz\`
+          - \`SHA256SUMS\`
+
+          Extract an archive anywhere and symlink \`bin/but\` onto \`PATH\`. Details and limitations: https://github.com/${REPO}/blob/master/MUSL.md
+
+          Source revision: \`${SHA}\`
+          EOF
+          )"
+          # The heredoc above is indented; strip the common indent.
+          notes="$(sed 's/^          //' <<< "$notes")"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./*.tar.xz SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" ./*.tar.xz SHA256SUMS \
+              --title "but ${VERSION} (static Linux musl)" \
+              --notes "$notes" \
+              --latest
+          fi
+          url="$(gh release view "$RELEASE_TAG" --json url --jq .url)"
+          echo "Release: ${url}" >> "$GITHUB_STEP_SUMMARY"
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'
