@@ -23,17 +23,20 @@ on:
   push:
     tags:
       - "release/*"
-    # Pushes to the default branch that change this workflow build the latest
-    # upstream release tag. workflow_dispatch is preferred; this also starts a
-    # build when the token cannot call the dispatch API. Tag pushes are not
-    # path-filtered.
+    # A push to the default branch that changes this workflow catches up the
+    # oldest unpublished upstream release, same as the schedule. Tag pushes
+    # are not path-filtered. The scheduled run itself syncs the tag, builds,
+    # and publishes; it does not depend on workflow_dispatch.
     branches:
       - master
   release:
     types: [published]
   schedule:
-    # Daily look for a new upstream release/* tag.
+    # Daily look for upstream release/X.Y.Z tags that do not yet have musl assets.
+    # Minute 17 avoids the start-of-hour Actions rush. UTC.
     - cron: "17 6 * * *"
+    # Temporary smoke test at 09:30 UTC on 2026-10-14. Remove after that run.
+    - cron: "30 9 * * *"
 
 permissions:
   contents: read
@@ -102,7 +105,7 @@ jobs:
             printf '%s' "$ver"
           }
 
-          latest_upstream_release() {
+          upstream_stable_versions() {
             git ls-remote --tags "$UPSTREAM" 'refs/tags/release/*' > /tmp/upstream-tags.txt
             mapfile -t versions < <(
               sed -n 's#.*refs/tags/release/##p' /tmp/upstream-tags.txt |
@@ -113,10 +116,67 @@ jobs:
               echo "no stable upstream release/* tags" >&2
               exit 1
             fi
-            version="${versions[-1]}"
-            validate_version "$version"
-            ref="release/${version}"
-            validate_ref "$ref"
+          }
+
+          # Complete means this fork's GitHub Release has both musl tarballs and SHA256SUMS.
+          # "release not found" is incomplete. Any other gh failure stops the job.
+          release_is_complete() {
+            local version="$1"
+            local tag="release/${version}"
+            local assets
+            if ! assets="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/tmp/gh-release-err)"; then
+              if grep -qi 'release not found' /tmp/gh-release-err; then
+                return 1
+              fi
+              echo "could not read GitHub Release ${tag}" >&2
+              cat /tmp/gh-release-err >&2
+              exit 1
+            fi
+            grep -qx "gitbutler-cli-${version}-x86_64-linux-musl.tar.xz" <<<"$assets" \
+              && grep -qx "gitbutler-cli-${version}-aarch64-linux-musl.tar.xz" <<<"$assets" \
+              && grep -qx "SHA256SUMS" <<<"$assets"
+          }
+
+          # Oldest stable tag newer than the newest release that already has musl
+          # assets. Tags older than that release are not backfilled. When nothing
+          # has been published yet, the candidate is the latest tag only.
+          # Prints the version on stdout, or nothing when this fork is caught up.
+          # One scheduled run publishes one version; later runs take the next.
+          choose_candidate() {
+            upstream_stable_versions
+            local baseline="" i v past=false
+            for ((i=${#versions[@]}-1; i>=0; i--)); do
+              v="${versions[i]}"
+              if release_is_complete "$v"; then
+                baseline="$v"
+                break
+              fi
+            done
+            if [[ -z "$baseline" ]]; then
+              v="${versions[-1]}"
+              echo "no complete musl release; candidate is latest ${v}" >&2
+              if ! release_is_complete "$v"; then
+                printf '%s' "$v"
+              fi
+              return
+            fi
+            echo "newest complete musl release is ${baseline}" >&2
+            for v in "${versions[@]}"; do
+              if [[ "$past" == false ]]; then
+                if [[ "$v" == "$baseline" ]]; then
+                  past=true
+                fi
+                continue
+              fi
+              if release_is_complete "$v"; then
+                echo "${v} already has musl assets" >&2
+                continue
+              fi
+              echo "selected ${v}; newer unpublished tags wait for a later run" >&2
+              printf '%s' "$v"
+              return
+            done
+            echo "caught up; no unpublished stable release after ${baseline}" >&2
           }
 
           publish=false
@@ -138,7 +198,16 @@ jobs:
               ;;
             schedule)
               publish=true
-              latest_upstream_release
+              version="$(choose_candidate)"
+              if [[ -z "$version" ]]; then
+                skip=true
+                version=0.0.0
+                ref="${REF_NAME}"
+              else
+                validate_version "$version"
+                ref="release/${version}"
+                validate_ref "$ref"
+              fi
               ;;
             push)
               publish=true
@@ -154,7 +223,16 @@ jobs:
                   ref="$REF_NAME"
                   echo "workflow unchanged on ${REF_NAME}; not building"
                 else
-                  latest_upstream_release
+                  version="$(choose_candidate)"
+                  if [[ -z "$version" ]]; then
+                    skip=true
+                    version=0.0.0
+                    ref="${REF_NAME}"
+                  else
+                    validate_version "$version"
+                    ref="release/${version}"
+                    validate_ref "$ref"
+                  fi
                 fi
               fi
               ;;
@@ -187,24 +265,13 @@ jobs:
           fi
 
           release_tag="release/${version}"
-          if git fetch --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}" \
+          if [[ "$skip" != true ]] \
+            && git fetch --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}" \
             && [[ "$ref" != "$release_tag" ]]; then
             tag_sha="$(git rev-parse "${release_tag}^{commit}")"
             if [[ "$sha" != "$tag_sha" ]]; then
               echo "ref ${ref} (${sha}) does not match ${release_tag} (${tag_sha})" >&2
               exit 1
-            fi
-          fi
-
-          if [[ "$EVENT_NAME" == "schedule" ]]; then
-            assets="$(gh release view "$release_tag" --json assets --jq '.assets[].name' 2>/dev/null || true)"
-            need_x86="gitbutler-cli-${version}-x86_64-linux-musl.tar.xz"
-            need_arm="gitbutler-cli-${version}-aarch64-linux-musl.tar.xz"
-            if grep -qx "$need_x86" <<<"$assets" \
-              && grep -qx "$need_arm" <<<"$assets" \
-              && grep -qx "SHA256SUMS" <<<"$assets"; then
-              skip=true
-              echo "release ${release_tag} already has musl assets"
             fi
           fi
 

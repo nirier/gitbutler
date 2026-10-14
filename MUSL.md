@@ -56,9 +56,28 @@ cross-compiled and checked under QEMU. Each tarball is `xz`-compressed and shoul
 25 MB.
 
 The workflow runs on manual dispatch, on `release/*` tags and GitHub Releases, and on a
-daily schedule. The scheduled job looks for a new `release/<version>` tag on
-`gitbutlerapp/gitbutler`, pushes that tag to this fork when it is missing, and publishes a
-matching musl release when those assets are not already attached.
+daily schedule (`17 6 * * *`, 06:17 UTC). The scheduled job does the whole release itself
+with the workflow's `GITHUB_TOKEN` (`contents: write`). It does not need
+`workflow_dispatch`.
+
+Each run lists stable `release/<version>` tags (`X.Y.Z` only) on
+`gitbutlerapp/gitbutler`. It finds the newest tag whose GitHub Release on this fork
+already has both musl tarballs and `SHA256SUMS`, then builds the oldest stable tag after
+that one which is still missing those assets. The tag is fetched from this fork, or from
+upstream and pushed here when it is missing. The same run then builds both architectures
+and creates or updates the GitHub Release. A run that is already caught up stops after
+that check and does not rebuild. Older tags than the newest complete musl release are left
+alone, so existing history is not backfilled. If several new tags arrive before the next
+run, one is published per day and the rest follow on later days.
+
+GitHub does not always run that schedule. On a fork, scheduled workflows can be left
+disabled until someone enables them, and in a public repository they are disabled after 60
+days without activity. The workflow file also has to stay on the default branch. To turn
+the schedule back on, open this repository's Actions tab, select "Static musl CLI", and
+click "Enable workflow". A commit that changes the `cron` line does the same thing.
+`gh workflow enable musl-cli.yml` works for an account that is allowed to manage Actions
+here. Enabling the workflow is separate from `workflow_dispatch`, which this schedule does
+not call.
 
 Release 0.22.3 uses keyring's synchronous D-Bus backend, which would otherwise link
 `libdbus.so`. The workflow enables keyring's `vendored` feature while compiling the musl
