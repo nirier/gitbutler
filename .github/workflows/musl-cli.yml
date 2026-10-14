@@ -40,7 +40,7 @@ permissions:
 
 concurrency:
   group: musl-cli-${{ github.event_name }}-${{ github.ref }}-${{ inputs.version }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -263,43 +263,6 @@ jobs:
             qemu-user-static \
             xz-utils
 
-      - name: Cache musl toolchain
-        id: musl-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          path: ${{ runner.tool_cache }}/musl-cross
-          key: musl-cc-${{ matrix.arch }}-2021-11-23
-
-      - name: Install musl cross toolchain
-        run: |
-          set -euo pipefail
-          prefix="${ARCH}-linux-musl-cross"
-          dest="${RUNNER_TOOL_CACHE}/musl-cross"
-          gcc="${dest}/${prefix}/bin/${ARCH}-linux-musl-gcc"
-          if [[ ! -x "$gcc" ]]; then
-            mkdir -p "$dest"
-            tmp="$(mktemp)"
-            downloaded=0
-            for url in \
-              "https://musl.cc/${prefix}.tgz" \
-              "https://more.musl.cc/${prefix}.tgz"
-            do
-              echo "fetching ${url}"
-              if curl -fL --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
-                tar -xzf "$tmp" -C "$dest"
-                downloaded=1
-                break
-              fi
-            done
-            rm -f "$tmp"
-            if [[ "$downloaded" != 1 || ! -x "$gcc" ]]; then
-              echo "failed to install ${prefix}" >&2
-              exit 1
-            fi
-          fi
-          echo "${dest}/${prefix}/bin" >> "$GITHUB_PATH"
-          "${gcc}" --version
-
       - name: Install Rust toolchain
         run: |
           set -euo pipefail
@@ -314,6 +277,23 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           rustup show
           rustup target add "$TARGET"
+          zig_version=0.17.0
+          zig_dest="${RUNNER_TOOL_CACHE}/zig-${zig_version}"
+          if [[ ! -x "${zig_dest}/zig" ]]; then
+            mkdir -p "$zig_dest"
+            curl -fL --retry 3 --retry-delay 2 --max-time 180 \
+              -o /tmp/zig.tar.xz \
+              "https://ziglang.org/download/${zig_version}/zig-x86_64-linux-${zig_version}.tar.xz"
+            tar -xJf /tmp/zig.tar.xz -C "$zig_dest" --strip-components=1
+          fi
+          echo "$zig_dest" >> "$GITHUB_PATH"
+          "${zig_dest}/zig" version
+          curl -fL --retry 3 --retry-delay 2 --max-time 120 \
+            -o /tmp/cargo-zigbuild.tar.xz \
+            https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.23.4/cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz
+          tar -xJf /tmp/cargo-zigbuild.tar.xz -C "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo zigbuild --version
 
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -386,12 +366,8 @@ jobs:
             source "$HOME/.cargo/env"
           fi
           suffix="$(printf '%s' "$TARGET" | tr 'a-z-' 'A-Z_')"
-          lower="$(printf '%s' "$TARGET" | tr '-' '_')"
-          export "CC_${lower}=${ARCH}-linux-musl-gcc"
-          export "CXX_${lower}=${ARCH}-linux-musl-g++"
-          export "AR_${lower}=${ARCH}-linux-musl-ar"
-          export "CARGO_TARGET_${suffix}_LINKER=${ARCH}-linux-musl-gcc"
-          # Target rustflags replace .cargo/config.toml build.rustflags, so keep tokio_unstable.
+          # Target rustflags replace .cargo/config.toml [build].rustflags.
+          # cargo-zigbuild supplies the musl linker when this is unset.
           export "CARGO_TARGET_${suffix}_RUSTFLAGS=--cfg tokio_unstable -C target-feature=+crt-static"
           export LIBZ_SYS_STATIC=1
           export OPENSSL_STATIC=1
@@ -401,8 +377,8 @@ jobs:
             export GITBUTLER_REQUIRE_MCP_APP=1
           fi
           # The vendored patch edits Cargo.toml, so the published lockfile may need
-          # libdbus-sys's optional `cc` build-dependency. Do not pass --locked.
-          cargo build --release -p but --target "$TARGET"
+          # libdbus-sys's optional cc build-dependency. Do not pass --locked.
+          cargo zigbuild --release -p but --target "$TARGET"
 
       - name: Verify and package
         run: |
