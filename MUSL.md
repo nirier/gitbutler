@@ -56,7 +56,7 @@ cross-compiled and checked under QEMU. Each tarball is `xz`-compressed and shoul
 25 MB.
 
 The workflow runs on manual dispatch, on `release/*` tags and GitHub Releases, and on a
-daily schedule (`17 6 * * *`, 06:17 UTC). The scheduled job does the whole release itself
+daily schedule (`18 6 * * *`, 06:18 UTC). The scheduled job does the whole release itself
 with the workflow's `GITHUB_TOKEN` (`contents: write`). It does not need
 `workflow_dispatch`.
 
@@ -77,13 +77,12 @@ Push-triggered runs can still succeed while no `schedule` event is ever queued. 
 repository's workflow is `active`, and a ten-minute cron left on `master` for about 45
 minutes produced no schedule run. The account that last changes the `cron` line becomes
 the schedule's actor, and that account has to be an active user who can manage Actions.
-Commits from an app such as `cursor[bot]` do not turn the schedule on, and
-`gh workflow enable musl-cli.yml` from that app is rejected.
+The current cron line was committed as `nirier`. The workflow state is `active`.
+`gh workflow enable` from the cloud app is rejected, so that app cannot change the state.
 
-To enable it, sign in as the fork owner, open the Actions tab, select "Static musl CLI",
-and click "Enable workflow" if it is shown. Then commit a trivial change to the `cron`
-line from that same account so the schedule actor is the owner. The next morning's run is
-06:17 UTC. In the run list, the event must be `schedule`. Enabling the workflow is separate
+If a later run list shows the workflow disabled, sign in as the fork owner, open the
+Actions tab, select "Static musl CLI", and click "Enable workflow". The next run is
+06:18 UTC. In the run list, the event must be `schedule`. Enabling the workflow is separate
 from `workflow_dispatch`, which the daily job does not call.
 
 Release 0.22.3 uses keyring's synchronous D-Bus backend, which would otherwise link
