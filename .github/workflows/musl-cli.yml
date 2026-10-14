@@ -295,7 +295,7 @@ jobs:
           mkdir -p /tmp/cargo-zigbuild
           tar -xJf /tmp/cargo-zigbuild.tar.xz -C /tmp/cargo-zigbuild --strip-components=1
           install -m 755 /tmp/cargo-zigbuild/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo zigbuild --version
+          cargo-zigbuild -V
 
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
